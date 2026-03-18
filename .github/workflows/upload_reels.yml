@@ -1,23 +1,24 @@
-name: 🎬 Auto Upload Reels
+name: 🎬 Auto Upload Reels (Tamil)
 
 on:
   schedule:
-    - cron: '0 1 * * *'
-    - cron: '30 2 * * *'
-    - cron: '0 5 * * *'
-    - cron: '0 7 * * *'
-    - cron: '30 8 * * *'
-    - cron: '0 10 * * *'
-    - cron: '30 11 * * *'
-    - cron: '0 13 * * *'
-    - cron: '30 14 * * *'
-    - cron: '0 16 * * *'
-    - cron: '30 17 * * *'
-    - cron: '0 20 * * *'
+    # Tamil: fires at :10 or :40 — offset from Telugu by 10 min
+    - cron: '10 1 * * *'      # IST  6:40 AM
+    - cron: '40 2 * * *'      # IST  8:10 AM
+    - cron: '10 5 * * *'      # IST 10:40 AM
+    - cron: '10 7 * * *'      # IST 12:40 PM
+    - cron: '40 8 * * *'      # IST  2:10 PM
+    - cron: '10 10 * * *'     # IST  3:40 PM
+    - cron: '40 11 * * *'     # IST  5:10 PM
+    - cron: '10 13 * * *'     # IST  6:40 PM
+    - cron: '40 14 * * *'     # IST  8:10 PM
+    - cron: '10 16 * * *'     # IST  9:40 PM
+    - cron: '40 17 * * *'     # IST 11:10 PM
+    - cron: '10 20 * * *'     # IST  1:40 AM
   workflow_dispatch:
 
 concurrency:
-  group: reel-uploader
+  group: tamil-uploader
   cancel-in-progress: false
 
 permissions:
@@ -26,7 +27,7 @@ permissions:
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
