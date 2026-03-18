@@ -1,0 +1,5 @@
+
+session.json
+*.mp4
+/tmp/
+thumb_cache/
