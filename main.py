@@ -69,7 +69,6 @@ class C:
     VIDEO_EXTS    = (".mp4", ".mkv", ".avi", ".mov", ".webm")
     FONT_BOLD     = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     FONT_REG      = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    # Updated model list — only models that actually work on free tier
     GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash-lite", "gemini-2.0-flash"]
 
 
@@ -321,14 +320,12 @@ def extract_clip(video, part, total, out_path, watermark="", display_name=""):
 
     if os.path.exists(C.FONT_BOLD):
         font_esc = C.FONT_BOLD.replace(":", "\\:")
-        # Part number — TOP CENTER, big, dark background
         vf_parts.append(
             f"drawtext=textfile='{part_file}':fontfile='{font_esc}'"
             f":fontsize=44:fontcolor=white"
             f":x=(w-tw)/2:y=25"
             f":box=1:boxcolor=black@0.6:boxborderw=14"
         )
-        # Watermark — bottom right, semi-transparent
         if watermark:
             vf_parts.append(
                 f"drawtext=textfile='{wm_file}':fontfile='{font_esc}'"
@@ -413,11 +410,6 @@ def extract_frame(video, t_sec, out_jpg):
 
 
 def select_best_frame(video, duration):
-    """
-    Extract 9 frames → ask Gemini which is best → return frame + timestamp.
-    This is the ONLY Gemini call per episode (not per part).
-    Saves quota: 1 call per episode vs 12+ calls per episode before.
-    """
     log("Selecting best thumbnail frame...")
     frames = []
     timestamps = []
@@ -427,7 +419,7 @@ def select_best_frame(video, duration):
         jpg = os.path.join(C.FRAMES_DIR, f"frame_{i}.jpg")
         frames.append(extract_frame(video, t, jpg))
 
-    chosen_idx = 4  # default: middle frame
+    chosen_idx = 4
     if GEMINI and C.GEMINI_KEY:
         try:
             grid = Image.new("RGB", (960, 960))
@@ -488,23 +480,22 @@ def get_font(size, bold=True):
 
 def make_thumbnail(bg_img, display_name, part, total, out_path):
     """
-    SAME background frame for entire episode.
-    PART NUMBER changes every reel — displayed BIG at TOP CENTER.
+    Clean thumbnail: episode frame + ONLY part number.
+    Part number positioned between top and center (~30% from top).
+    No movie name, no clutter — just big visible part number.
 
     ┌─────────────────────────┐
-    │  ┌───────────────────┐  │
-    │  │      PART         │  │  ← label "PART" in gray
-    │  │    3  /  24       │  │  ← BIG gold numbers, centered
-    │  └───────────────────┘  │
-    │                         │
-    │     DORAEMON S16        │  ← white title text
-    │     EP.1 – STORY        │
     │                         │
     │                         │
-    │   [episode frame]       │  ← same for all parts
+    │   ┌─────────────────┐   │
+    │   │      PART       │   │  ← ~30% from top
+    │   │    4  /  24     │   │  ← BIG gold on dark box
+    │   └─────────────────┘   │
+    │                         │
+    │   [episode frame]       │
     │                         │
     │                         │
-    │  ━━━━━━━━━━━━━━━━━━━━  │  ← gold line
+    │                         │
     │                         │
     └─────────────────────────┘
     """
@@ -513,101 +504,61 @@ def make_thumbnail(bg_img, display_name, part, total, out_path):
     try:
         thumb = bg_img.copy().resize((1080, 1920), Image.LANCZOS).convert("RGBA")
 
-        # Dark gradient overlays
-        overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
-        draw_o = ImageDraw.Draw(overlay)
-        for y in range(700):
-            alpha = int(230 * (1 - y / 700))
-            draw_o.rectangle([(0, y), (1080, y + 1)], fill=(0, 0, 0, alpha))
-        for y in range(1300, 1920):
-            alpha = int(230 * ((y - 1300) / 620))
-            draw_o.rectangle([(0, y), (1080, y + 1)], fill=(0, 0, 0, alpha))
-        thumb = Image.alpha_composite(thumb, overlay)
+        # Slight darkening so text is readable on any frame
+        dark = Image.new("RGBA", (1080, 1920), (0, 0, 0, 60))
+        thumb = Image.alpha_composite(thumb, dark)
 
-        # Part number box (rounded rectangle, top center)
+        # Part number box at ~30% from top
         box_overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
         box_draw = ImageDraw.Draw(box_overlay)
-        box_w = 520
-        box_h = 150
+
+        box_w = 580
+        box_h = 170
         box_x = (1080 - box_w) // 2
-        box_y = 40
-        # Dark box with gold border
+        box_y = 480
+
+        # Dark rounded box with gold border
         box_draw.rounded_rectangle(
             [(box_x, box_y), (box_x + box_w, box_y + box_h)],
-            radius=25, fill=(0, 0, 0, 200)
+            radius=30, fill=(0, 0, 0, 190)
         )
         box_draw.rounded_rectangle(
             [(box_x, box_y), (box_x + box_w, box_y + box_h)],
-            radius=25, outline=(255, 215, 0, 220), width=3
+            radius=30, outline=(255, 215, 0, 230), width=4
         )
+
         thumb = Image.alpha_composite(thumb, box_overlay).convert("RGB")
         draw = ImageDraw.Draw(thumb)
 
         # Fonts
-        font_part_label = get_font(32)
-        font_part_num = get_font(78)
-        font_title = get_font(54)
-
-        # ════════════════════════════════════════
-        #  PART NUMBER — TOP CENTER (changes every reel)
-        # ════════════════════════════════════════
+        font_label = get_font(34)
+        font_num = get_font(82)
 
         # "PART" label
         label = "PART"
-        bb_l = draw.textbbox((0, 0), label, font=font_part_label)
+        bb_l = draw.textbbox((0, 0), label, font=font_label)
         lw = bb_l[2] - bb_l[0]
         draw.text(
-            ((1080 - lw) // 2, box_y + 8),
-            label, font=font_part_label, fill=(200, 200, 200)
+            ((1080 - lw) // 2, box_y + 12),
+            label, font=font_label, fill=(200, 200, 200)
         )
 
-        # Big "3 / 24" number
-        num_text = f"{part}  /  {total}"
-        bb_n = draw.textbbox((0, 0), num_text, font=font_part_num)
+        # Big part number in gold
+        num_text = f"{part} / {total}"
+        bb_n = draw.textbbox((0, 0), num_text, font=font_num)
         nw = bb_n[2] - bb_n[0]
-        nh = bb_n[3] - bb_n[1]
         nx = (1080 - nw) // 2
-        ny = box_y + 48
+        ny = box_y + 55
+
         # Black shadow for readability
         for dx in range(-3, 4):
             for dy in range(-3, 4):
-                draw.text((nx + dx, ny + dy), num_text, font=font_part_num, fill="black")
+                draw.text((nx + dx, ny + dy), num_text, font=font_num, fill="black")
         # Gold number
-        draw.text((nx, ny), num_text, font=font_part_num, fill=(255, 215, 0))
-
-        # ════════════════════════════════════════
-        #  MOVIE TITLE — below part box, white
-        # ════════════════════════════════════════
-        title = display_name.upper()
-        words = title.split()
-        lines = []
-        line = ""
-        for w in words:
-            test = (line + " " + w).strip()
-            if len(test) > 22 and line:
-                lines.append(line)
-                line = w
-            else:
-                line = test
-        if line:
-            lines.append(line)
-
-        y_cur = 240
-        for ln in lines:
-            bb = draw.textbbox((0, 0), ln, font=font_title)
-            tw = bb[2] - bb[0]
-            x = (1080 - tw) // 2
-            for dx in range(-3, 4):
-                for dy in range(-3, 4):
-                    draw.text((x + dx, y_cur + dy), ln, font=font_title, fill="black")
-            draw.text((x, y_cur), ln, font=font_title, fill="white")
-            y_cur += bb[3] - bb[1] + 12
-
-        # Gold accent line near bottom
-        draw.rectangle([(150, 1760), (930, 1764)], fill=(255, 215, 0))
+        draw.text((nx, ny), num_text, font=font_num, fill=(255, 215, 0))
 
         thumb.save(out_path, "JPEG", quality=95)
-        log(f"Thumbnail saved — Part {part}/{total} with episode frame")
+        log(f"Thumbnail saved — Part {part}/{total}")
         return True
 
     except Exception as e:
@@ -615,12 +566,10 @@ def make_thumbnail(bg_img, display_name, part, total, out_path):
         try:
             fb = Image.new("RGB", (1080, 1920), (20, 20, 40))
             d = ImageDraw.Draw(fb)
-            f_big = get_font(72)
-            f_med = get_font(48)
+            f_big = get_font(82)
             pt = f"Part {part}/{total}"
             bb = d.textbbox((0, 0), pt, font=f_big)
-            d.text(((1080 - (bb[2] - bb[0])) // 2, 200), pt, font=f_big, fill=(255, 215, 0))
-            d.text((100, 800), display_name, font=f_med, fill="white")
+            d.text(((1080 - (bb[2] - bb[0])) // 2, 480), pt, font=f_big, fill=(255, 215, 0))
             fb.save(out_path, "JPEG")
             return True
         except Exception:
@@ -629,10 +578,6 @@ def make_thumbnail(bg_img, display_name, part, total, out_path):
 
 # ── CAPTIONS (template-based, zero API calls) ────────────────
 def generate_caption(display_name, part, total):
-    """
-    NO Gemini calls — uses language templates with randomization.
-    Saves ALL quota for frame selection.
-    """
     lang = C.LANGUAGE
     p = part
     t = total
@@ -945,7 +890,6 @@ def main():
         video_info["started"] = datetime.now().isoformat()
     save_log(log_data)
 
-    # Auto-resume from progress.json
     if progress.get("drive_id") != drive_id:
         log("New video — resetting progress to Part 0")
         progress = {
@@ -968,7 +912,6 @@ def main():
         git_push()
         return
 
-    # Thumbnail: select frame ONCE per episode, reuse for all parts
     log_step(8, 9, "Thumbnail frame selection")
     if progress.get("thumb_time", -1) < 0:
         bg_frame, thumb_time = select_best_frame(C.MOVIE_FILE, duration)
@@ -980,7 +923,6 @@ def main():
         bg_frame = extract_frame(C.MOVIE_FILE, thumb_time, jpg)
         log(f"Reusing saved frame at t={thumb_time:.1f}s")
 
-    # Instagram login
     log_step(9, 9, "Upload to Instagram")
     cl, login_err = ig_login()
     if login_err == "challenge":
@@ -998,7 +940,6 @@ def main():
         git_push()
         return
 
-    # Extract, thumbnail, upload
     part = last + 1
     clip_path = os.path.join(C.CLIPS_DIR, f"part_{part}.mp4")
     thumb_path = os.path.join(C.THUMBS_DIR, f"thumb_{part}.jpg")
@@ -1024,12 +965,8 @@ def main():
         git_push()
         return
 
-    # Thumbnail with THIS part number (background stays same)
     make_thumbnail(bg_frame, display, part, total, thumb_path)
-
-    # Caption from templates (no Gemini call)
     caption = generate_caption(display, part, total)
-
     result = ig_upload(cl, clip_path, thumb_path, caption)
 
     if result == "challenge":
@@ -1082,7 +1019,6 @@ def main():
     save_log(log_data)
     git_push()
 
-    # Summary
     print("\n" + "=" * 50, flush=True)
     done_v = log_data.get("completed", 0)
     total_v = len(log_data["videos"])
