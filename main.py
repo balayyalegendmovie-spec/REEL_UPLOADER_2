@@ -4,6 +4,10 @@
 ============================================================
 Template repo — clone for each Instagram account.
 Only GitHub Secrets change between accounts.
+
+AUTO-RESUME: Reads progress.json to continue from last part.
+AUTO-NEXT:   When episode completes, picks next automatically.
+SORT ORDER:  Episode 1 → 2 → 3 ... → 52 (numerical, not alphabetical).
 ============================================================
 """
 
@@ -72,43 +76,53 @@ def log(msg, prefix="✅"):
 
 def log_err(msg):  log(msg, "❌")
 def log_warn(msg): log(msg, "⚠️")
-def log_step(n, t, msg): print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ━━━ STEP {n}/{t}: {msg} ━━━", flush=True)
+def log_step(n, t, msg):
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ━━━ STEP {n}/{t}: {msg} ━━━", flush=True)
 
 
 # ── JSON HELPERS ──────────────────────────────────────────────
 def load_json(fp, default=None):
-    if default is None: default = {}
+    if default is None:
+        default = {}
     try:
         if os.path.exists(fp):
-            with open(fp, "r") as f: return json.load(f)
-    except Exception: pass
+            with open(fp, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
     return default
 
 def save_json(fp, data):
-    with open(fp, "w") as f: json.dump(data, f, indent=2, ensure_ascii=False)
+    with open(fp, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 # ── GIT ───────────────────────────────────────────────────────
 def git_cmd(*args):
     try:
-        return subprocess.run(["git"] + list(args), capture_output=True, text=True, timeout=60).returncode == 0
-    except Exception: return False
+        return subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True, timeout=60
+        ).returncode == 0
+    except Exception:
+        return False
 
 def git_push():
     log("Pushing progress to GitHub...")
     git_cmd("config", "user.name", "ReelBot")
     git_cmd("config", "user.email", "bot@reelbot.com")
     ignore_entries = ["session.json", "*.mp4", "/tmp/", "thumb_cache/"]
+    existing = ""
     if os.path.exists(".gitignore"):
         existing = open(".gitignore").read()
-    else:
-        existing = ""
     new = [e for e in ignore_entries if e not in existing]
     if new:
-        with open(".gitignore", "a") as f: f.write("\n".join([""] + new + [""]))
+        with open(".gitignore", "a") as f:
+            f.write("\n".join([""] + new + [""]))
         git_cmd("add", ".gitignore")
     for f in [C.PROGRESS, C.LOG, C.HISTORY]:
-        if os.path.exists(f): git_cmd("add", f)
+        if os.path.exists(f):
+            git_cmd("add", f)
     check = subprocess.run(["git", "diff", "--staged", "--quiet"], capture_output=True)
     if check.returncode != 0:
         git_cmd("commit", "-m", "🤖 progress update")
@@ -119,6 +133,12 @@ def git_push():
 
 
 # ── EPISODE PARSER ────────────────────────────────────────────
+# Handles: Doraemon_S16_–_Episode_1_–_Story_name.mkv
+#          Doraemon_S16_–_Episode_52_–_Name_–_Tam+Tel+Hin.mp4
+#          Movie_Name_2024.mp4
+# Sorts by Season + Episode NUMBER (not alphabetical)
+# So Episode_2 comes before Episode_10
+
 def parse_episode(filename):
     stem = Path(filename).stem
     s_m = re.search(r'[Ss](?:eason[_\s]?)?(\d+)', stem)
@@ -128,7 +148,10 @@ def parse_episode(filename):
 
     clean = re.sub(r'[_]+', ' ', stem)
     clean = re.sub(r'\s*[–—-]\s*', ' – ', clean)
-    clean = re.sub(r'\s*[–—-]?\s*(Tam|Tel|Hin|Eng|Sub|Dub)(\+(Tam|Tel|Hin|Eng|Sub|Dub))*\s*$', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(
+        r'\s*[–—-]?\s*(Tam|Tel|Hin|Eng|Sub|Dub)(\+(Tam|Tel|Hin|Eng|Sub|Dub))*\s*$',
+        '', clean, flags=re.IGNORECASE
+    )
 
     if episode is not None:
         sm = re.match(r'^(.*?)\s*[–—-]?\s*[Ee]pisode', clean)
@@ -140,11 +163,17 @@ def parse_episode(filename):
         display = clean.strip()
 
     display = re.sub(r'\s{2,}', ' ', display).strip()
+    # NUMERICAL sort: (season, episode, filename)
+    # Episode 2 → (16, 2, ...) comes BEFORE Episode 10 → (16, 10, ...)
     sort_key = (season or 9999, episode or 9999, filename)
     return {"display": display, "season": season, "episode": episode, "sort_key": sort_key}
 
 
 # ── SMART JITTER ──────────────────────────────────────────────
+# Analyzes last 5 days of uploads at same hour
+# Picks a delay (1-15 min) that hasn't been used recently
+# So Instagram never sees exact same posting pattern
+
 def smart_delay():
     log_step(3, 9, "Smart jitter delay")
     history = load_json(C.HISTORY, {"uploads": []})
@@ -152,18 +181,19 @@ def smart_delay():
     hour = now.hour
     recent = [
         h["delay"] for h in history.get("uploads", [])
-        if h.get("hour") == hour and
-        (now - datetime.fromisoformat(h["time"])).days < 5
+        if h.get("hour") == hour
+        and (now - datetime.fromisoformat(h["time"])).days < 5
     ]
     candidates = [m for m in range(1, 16) if m not in recent]
     if not candidates:
         candidates = list(range(1, 16))
     delay = random.choice(candidates)
-    log(f"Jitter: sleeping {delay} minutes (recent same-slot delays: {recent})")
+    log(f"Jitter: sleeping {delay} min (recent same-slot: {recent})")
     time.sleep(delay * 60)
     history.setdefault("uploads", []).append({
         "time": now.isoformat(), "hour": hour, "delay": delay
     })
+    # Keep only last 7 days
     history["uploads"] = [
         h for h in history["uploads"]
         if (now - datetime.fromisoformat(h["time"])).days < 7
@@ -176,7 +206,8 @@ def smart_delay():
 def list_drive_files():
     log_step(4, 9, "Scan Google Drive")
     url = "https://www.googleapis.com/drive/v3/files"
-    all_files, token = [], None
+    all_files = []
+    token = None
     while True:
         params = {
             "q": f"'{C.DRIVE_FOLDER}' in parents and trashed=false",
@@ -184,7 +215,8 @@ def list_drive_files():
             "fields": "nextPageToken,files(id,name,size)",
             "pageSize": 100,
         }
-        if token: params["pageToken"] = token
+        if token:
+            params["pageToken"] = token
         try:
             r = requests.get(url, params=params, timeout=30)
             if r.status_code != 200:
@@ -195,35 +227,48 @@ def list_drive_files():
                 if any(f["name"].lower().endswith(e) for e in C.VIDEO_EXTS):
                     info = parse_episode(f["name"])
                     all_files.append({
-                        "id": f["id"], "name": f["name"],
+                        "id": f["id"],
+                        "name": f["name"],
                         "size": int(f.get("size", 0)),
-                        "display": info["display"], "sort_key": info["sort_key"],
+                        "display": info["display"],
+                        "sort_key": info["sort_key"],
                     })
             token = data.get("nextPageToken")
-            if not token: break
+            if not token:
+                break
         except Exception as e:
             log_err(f"Drive error: {e}")
             return []
+
+    # CORRECT NUMERICAL SORT
+    # Episode_1 → Episode_2 → ... → Episode_10 → Episode_52
+    # NOT Episode_1 → Episode_10 → Episode_11 → Episode_2 (alphabetical)
     all_files.sort(key=lambda x: x["sort_key"])
-    log(f"Found {len(all_files)} videos")
+
+    log(f"Found {len(all_files)} videos (sorted by episode number)")
     for i, f in enumerate(all_files, 1):
-        log(f"  {i}. {f['display']} ({f['size']/1024/1024:.1f}MB)")
+        log(f"  {i}. {f['display']} ({f['size'] / 1024 / 1024:.1f}MB)")
     return all_files
 
 
 def download_file(file_id, out_path):
     log_step(6, 9, "Download from Google Drive")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    if os.path.exists(out_path): os.remove(out_path)
+    if os.path.exists(out_path):
+        os.remove(out_path)
     for attempt in range(1, 4):
         try:
-            url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={C.DRIVE_KEY}&acknowledgeAbuse=true"
+            url = (
+                f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                f"?alt=media&key={C.DRIVE_KEY}&acknowledgeAbuse=true"
+            )
             with requests.get(url, stream=True, timeout=600) as r:
                 if r.status_code != 200:
                     log_err(f"Drive download HTTP {r.status_code}")
-                    if attempt < 3: time.sleep(30 * attempt); continue
+                    if attempt < 3:
+                        time.sleep(30 * attempt)
+                        continue
                     return False
-                header = r.content[:20] if len(r.content) > 20 else r.content
                 total = int(r.headers.get("content-length", 0))
                 downloaded = 0
                 with open(out_path, "wb") as f:
@@ -231,20 +276,22 @@ def download_file(file_id, out_path):
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total and downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
-                            log(f"  Download: {downloaded/1024/1024:.0f}/{total/1024/1024:.0f} MB")
+                            log(f"  Download: {downloaded / 1024 / 1024:.0f}/{total / 1024 / 1024:.0f} MB")
             if os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
+                # Check if we got HTML instead of video
                 with open(out_path, "rb") as f:
                     head = f.read(50).lower()
                 if b"<!doctype" in head or b"<html" in head:
                     log_err("Got HTML instead of video — file may be too large for API key")
                     os.remove(out_path)
                     return False
-                log(f"Download complete: {os.path.getsize(out_path)/1024/1024:.1f} MB")
+                log(f"Download complete: {os.path.getsize(out_path) / 1024 / 1024:.1f} MB")
                 return True
             log_err("Download produced empty file")
         except Exception as e:
             log_err(f"Download attempt {attempt} failed: {e}")
-            if attempt < 3: time.sleep(30 * attempt)
+            if attempt < 3:
+                time.sleep(30 * attempt)
     return False
 
 
@@ -254,43 +301,71 @@ def get_duration(path):
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30
+        )
         return float(r.stdout.strip())
-    except Exception: return 0.0
+    except Exception:
+        return 0.0
+
 
 def count_parts(duration):
-    return sum(1 for s in range(0, int(duration), C.CLIP_LEN)
-               if min(s + C.CLIP_LEN, duration) - s >= 5)
+    return sum(
+        1 for s in range(0, int(duration), C.CLIP_LEN)
+        if min(s + C.CLIP_LEN, duration) - s >= 5
+    )
+
 
 def extract_clip(video, part, total, out_path, watermark="", display_name=""):
+    """
+    Re-encodes clip with:
+    - h264+aac (Instagram compatible)
+    - Letterbox (black bars top/bottom for 9:16)
+    - 3% zoom + 2% brightness (anti-copyright)
+    - Part number TOP CENTER (big, visible)
+    - Watermark bottom-right (semi-transparent)
+    """
     start = (part - 1) * C.CLIP_LEN
-    log(f"Extracting Part {part}/{total} ({start}s→{start+C.CLIP_LEN}s)")
+    log(f"Extracting Part {part}/{total} ({start}s→{start + C.CLIP_LEN}s)")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
+    # Write text to files to avoid ffmpeg escaping issues
     part_file = f"{C.TMP}/part_text.txt"
     wm_file = f"{C.TMP}/wm_text.txt"
-    with open(part_file, "w") as f: f.write(f"Part {part}/{total}")
-    with open(wm_file, "w") as f: f.write(watermark if watermark else " ")
+    with open(part_file, "w") as f:
+        f.write(f"Part {part}/{total}")
+    with open(wm_file, "w") as f:
+        f.write(watermark if watermark else " ")
 
+    # Build video filter chain
     vf_parts = [
+        # Scale up 3% wider than 1080 for zoom effect
         f"scale=trunc(1080*(1+{C.ZOOM})/2)*2:-2",
+        # Crop back to 1080 width (removes edges = zoom effect)
         f"crop=1080:trunc(ih*1080/(iw)/2)*2",
+        # Pad to 9:16 with black bars
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
+        # Slight brightness/contrast shift (anti-fingerprint)
         f"eq=brightness={C.BRIGHT}:contrast={C.CONTRAST}",
     ]
+
     if os.path.exists(C.FONT_BOLD):
         font_esc = C.FONT_BOLD.replace(":", "\\:")
+        # Part number — TOP CENTER, big, with dark background box
         vf_parts.append(
             f"drawtext=textfile='{part_file}':fontfile='{font_esc}'"
-            f":fontsize=36:fontcolor=white:x=w-tw-30:y=30"
-            f":box=1:boxcolor=black@0.5:boxborderw=10"
+            f":fontsize=44:fontcolor=white"
+            f":x=(w-tw)/2:y=25"
+            f":box=1:boxcolor=black@0.6:boxborderw=14"
         )
+        # Watermark — bottom right, semi-transparent with shadow
         if watermark:
             vf_parts.append(
                 f"drawtext=textfile='{wm_file}':fontfile='{font_esc}'"
-                f":fontsize=28:fontcolor=white@0.4:x=w-tw-30:y=h-th-30"
+                f":fontsize=28:fontcolor=white@0.4"
+                f":x=w-tw-30:y=h-th-30"
                 f":shadowcolor=black@0.6:shadowx=2:shadowy=2"
             )
+
     vf = ",".join(vf_parts)
 
     cmd = [
@@ -300,10 +375,12 @@ def extract_clip(video, part, total, out_path, watermark="", display_name=""):
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart", out_path,
     ]
+
     try:
         t0 = time.time()
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
+            # Retry without audio (some files have no audio stream)
             log_warn("Retrying without audio...")
             cmd_no_audio = [
                 "ffmpeg", "-y", "-ss", str(start), "-i", video,
@@ -316,7 +393,7 @@ def extract_clip(video, part, total, out_path, watermark="", display_name=""):
                 log_err(f"ffmpeg failed: {r.stderr[-300:]}")
                 return False
         if os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
-            log(f"Clip ready in {time.time()-t0:.1f}s — {os.path.getsize(out_path)/1024/1024:.1f}MB")
+            log(f"Clip ready in {time.time() - t0:.1f}s — {os.path.getsize(out_path) / 1024 / 1024:.1f}MB")
             return True
         log_err("ffmpeg produced empty file")
         return False
@@ -327,17 +404,24 @@ def extract_clip(video, part, total, out_path, watermark="", display_name=""):
         log_err(f"Clip extraction error: {e}")
         return False
 
+
 def validate_clip(path):
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=codec_name", "-show_entries", "format=duration",
+             "-show_entries", "stream=codec_name",
+             "-show_entries", "format=duration",
              "-of", "json", path],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30
+        )
         info = json.loads(r.stdout)
         dur = float(info.get("format", {}).get("duration", 0))
-        if dur > 60: log_err(f"Clip too long: {dur:.1f}s"); return False
-        if dur < 3: log_err(f"Clip too short: {dur:.1f}s"); return False
+        if dur > 60:
+            log_err(f"Clip too long: {dur:.1f}s")
+            return False
+        if dur < 3:
+            log_err(f"Clip too short: {dur:.1f}s")
+            return False
         log(f"Clip valid: {dur:.1f}s")
         return True
     except Exception as e:
@@ -346,31 +430,41 @@ def validate_clip(path):
 
 
 # ── THUMBNAIL ─────────────────────────────────────────────────
+# ONE background frame per episode (selected on first part)
+# Part number CHANGES every reel — big and centered
+
 def extract_frame(video, t_sec, out_jpg):
     os.makedirs(os.path.dirname(out_jpg), exist_ok=True)
     subprocess.run(
         ["ffmpeg", "-y", "-ss", str(t_sec), "-i", video,
          "-frames:v", "1", "-q:v", "2", out_jpg],
-        capture_output=True, timeout=30)
+        capture_output=True, timeout=30
+    )
     if os.path.exists(out_jpg) and os.path.getsize(out_jpg) > 0:
         return Image.open(out_jpg).copy()
     return Image.new("RGB", (1280, 720), (20, 20, 40))
 
+
 def select_best_frame(video, duration):
+    """Extract 9 frames, ask Gemini which is best, return that frame + timestamp."""
     log("Selecting best thumbnail frame...")
-    frames, timestamps = [], []
+    frames = []
+    timestamps = []
     for i in range(9):
         t = min(duration * (0.1 + i * 0.08), duration - 1.0)
         timestamps.append(t)
         jpg = os.path.join(C.FRAMES_DIR, f"frame_{i}.jpg")
         frames.append(extract_frame(video, t, jpg))
 
-    chosen_idx = 4
+    chosen_idx = 4  # default: middle frame
     if GEMINI and C.GEMINI_KEY:
         try:
             grid = Image.new("RGB", (960, 960))
             for idx, img in enumerate(frames):
-                grid.paste(img.resize((320, 320)), ((idx % 3) * 320, (idx // 3) * 320))
+                grid.paste(
+                    img.resize((320, 320)),
+                    ((idx % 3) * 320, (idx // 3) * 320)
+                )
             buf = BytesIO()
             grid.save(buf, format="JPEG", quality=85)
             client = genai.Client(api_key=C.GEMINI_KEY)
@@ -379,7 +473,9 @@ def select_best_frame(video, duration):
                     resp = client.models.generate_content(
                         model=model,
                         contents=[
-                            genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"),
+                            genai_types.Part.from_bytes(
+                                data=buf.getvalue(), mime_type="image/jpeg"
+                            ),
                             genai_types.Part.from_text(text=(
                                 "Pick the best movie thumbnail frame from this 3x3 grid.\n"
                                 "Grid numbered: 1 2 3 / 4 5 6 / 7 8 9\n"
@@ -388,7 +484,10 @@ def select_best_frame(video, duration):
                             )),
                         ],
                     )
-                    d = next((c for c in resp.text.strip() if c.isdigit() and c != "0"), None)
+                    d = next(
+                        (c for c in resp.text.strip() if c.isdigit() and c != "0"),
+                        None
+                    )
                     if d and 1 <= int(d) <= 9:
                         chosen_idx = int(d) - 1
                         log(f"Gemini chose frame #{d}")
@@ -403,73 +502,161 @@ def select_best_frame(video, duration):
     log(f"Best frame at t={chosen_time:.1f}s")
     return frames[chosen_idx], chosen_time
 
+
 def get_font(size, bold=True):
     fp = C.FONT_BOLD if bold else C.FONT_REG
     try:
-        if os.path.exists(fp): return ImageFont.truetype(fp, size)
-    except Exception: pass
+        if os.path.exists(fp):
+            return ImageFont.truetype(fp, size)
+    except Exception:
+        pass
     return ImageFont.load_default()
 
+
 def make_thumbnail(bg_img, display_name, part, total, out_path):
+    """
+    Same background for entire episode. Part number changes each reel.
+
+    Layout:
+    ┌──────────────────────┐
+    │    ┌──────────┐      │
+    │    │ PART 3/24│      │  ← TOP CENTER, gold on dark bg, BIG
+    │    └──────────┘      │
+    │                      │
+    │    MOVIE  TITLE      │  ← white, word-wrapped
+    │    (EPISODE NAME)    │
+    │                      │
+    │   [best frame from   │  ← same for all parts
+    │    this episode]     │
+    │                      │
+    │  ━━━━━━━━━━━━━━━━━━  │  ← gold accent line
+    │                      │
+    └──────────────────────┘
+    """
     log(f"Creating thumbnail Part {part}/{total}")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     try:
         thumb = bg_img.copy().resize((1080, 1920), Image.LANCZOS).convert("RGBA")
+
+        # ── Dark gradient overlays (top + bottom) ──
         overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
         draw_o = ImageDraw.Draw(overlay)
-        for y in range(600):
-            draw_o.rectangle([(0, y), (1080, y+1)], fill=(0, 0, 0, int(200 * (1 - y/600))))
-        for y in range(1400, 1920):
-            draw_o.rectangle([(0, y), (1080, y+1)], fill=(0, 0, 0, int(200 * ((y-1400)/520))))
+        # Top gradient: dark at top, fades to transparent
+        for y in range(700):
+            alpha = int(220 * (1 - y / 700))
+            draw_o.rectangle([(0, y), (1080, y + 1)], fill=(0, 0, 0, alpha))
+        # Bottom gradient: transparent to dark at bottom
+        for y in range(1300, 1920):
+            alpha = int(220 * ((y - 1300) / 620))
+            draw_o.rectangle([(0, y), (1080, y + 1)], fill=(0, 0, 0, alpha))
         thumb = Image.alpha_composite(thumb, overlay).convert("RGB")
         draw = ImageDraw.Draw(thumb)
 
-        font_title = get_font(64)
-        font_part = get_font(56)
+        # ── Fonts ──
+        font_part_big = get_font(72)
+        font_part_label = get_font(36)
+        font_title = get_font(58)
 
+        # ══════════════════════════════════════════════
+        # PART NUMBER — TOP CENTER, big gold text
+        # This is what changes every reel
+        # ══════════════════════════════════════════════
+
+        # Dark background box for part number
+        box_w, box_h = 500, 130
+        box_x = (1080 - box_w) // 2
+        box_y = 40
+        # Semi-transparent black box with rounded feel
+        part_overlay = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+        part_draw = ImageDraw.Draw(part_overlay)
+        part_draw.rounded_rectangle(
+            [(box_x, box_y), (box_x + box_w, box_y + box_h)],
+            radius=20, fill=(0, 0, 0, 180)
+        )
+        # Gold border
+        part_draw.rounded_rectangle(
+            [(box_x, box_y), (box_x + box_w, box_y + box_h)],
+            radius=20, outline=(255, 215, 0, 200), width=3
+        )
+        thumb = Image.alpha_composite(thumb.convert("RGBA"), part_overlay).convert("RGB")
+        draw = ImageDraw.Draw(thumb)
+
+        # "PART" label
+        part_label = "PART"
+        bb_l = draw.textbbox((0, 0), part_label, font=font_part_label)
+        lw = bb_l[2] - bb_l[0]
+        draw.text(
+            ((1080 - lw) // 2, box_y + 10),
+            part_label, font=font_part_label, fill=(200, 200, 200)
+        )
+
+        # Big number "3 / 24"
+        num_text = f"{part} / {total}"
+        bb_n = draw.textbbox((0, 0), num_text, font=font_part_big)
+        nw = bb_n[2] - bb_n[0]
+        nx = (1080 - nw) // 2
+        ny = box_y + 45
+        # Shadow
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                draw.text((nx + dx, ny + dy), num_text, font=font_part_big, fill="black")
+        # Gold text
+        draw.text((nx, ny), num_text, font=font_part_big, fill=(255, 215, 0))
+
+        # ══════════════════════════════════════════════
+        # MOVIE TITLE — below part number, white, wrapped
+        # ══════════════════════════════════════════════
         title = display_name.upper()
-        words, lines, line = title.split(), [], ""
+        words = title.split()
+        lines = []
+        line = ""
         for w in words:
             test = (line + " " + w).strip()
-            if len(test) > 20 and line: lines.append(line); line = w
-            else: line = test
-        if line: lines.append(line)
+            if len(test) > 22 and line:
+                lines.append(line)
+                line = w
+            else:
+                line = test
+        if line:
+            lines.append(line)
 
-        y_cur = 80
+        y_cur = 220
         for ln in lines:
             bb = draw.textbbox((0, 0), ln, font=font_title)
             tw = bb[2] - bb[0]
             x = (1080 - tw) // 2
+            # Shadow
             for dx in range(-3, 4):
                 for dy in range(-3, 4):
-                    draw.text((x+dx, y_cur+dy), ln, font=font_title, fill="black")
+                    draw.text((x + dx, y_cur + dy), ln, font=font_title, fill="black")
             draw.text((x, y_cur), ln, font=font_title, fill="white")
-            y_cur += bb[3] - bb[1] + 14
+            y_cur += bb[3] - bb[1] + 12
 
-        pt = f"PART {part} / {total}"
-        bb = draw.textbbox((0, 0), pt, font=font_part)
-        x = (1080 - (bb[2] - bb[0])) // 2
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
-                draw.text((x+dx, 1760+dy), pt, font=font_part, fill="black")
-        draw.text((x, 1760), pt, font=font_part, fill=(255, 215, 0))
-
-        draw.rectangle([(200, 1740), (880, 1743)], fill=(255, 215, 0))
+        # ── Gold accent line near bottom ──
+        draw.rectangle([(150, 1750), (930, 1754)], fill=(255, 215, 0))
 
         thumb.save(out_path, "JPEG", quality=95)
-        log("Thumbnail saved")
+        log(f"Thumbnail saved — Part {part}/{total}")
         return True
+
     except Exception as e:
         log_err(f"Thumbnail error: {e}")
+        # Fallback: simple text on dark background
         try:
             fb = Image.new("RGB", (1080, 1920), (20, 20, 40))
             d = ImageDraw.Draw(fb)
-            f = get_font(48)
-            d.text((100, 800), display_name, font=f, fill="white")
-            d.text((100, 900), f"Part {part}/{total}", font=f, fill=(255, 215, 0))
+            f_big = get_font(72)
+            f_med = get_font(48)
+            # Part number centered
+            pt = f"Part {part}/{total}"
+            bb = d.textbbox((0, 0), pt, font=f_big)
+            d.text(((1080 - (bb[2] - bb[0])) // 2, 200), pt, font=f_big, fill=(255, 215, 0))
+            # Title
+            d.text((100, 800), display_name, font=f_med, fill="white")
             fb.save(out_path, "JPEG")
             return True
-        except Exception: return False
+        except Exception:
+            return False
 
 
 # ── GEMINI CAPTIONS ───────────────────────────────────────────
@@ -506,27 +693,37 @@ def generate_caption(display_name, part, total):
         except Exception as e:
             log_warn(f"Gemini caption init: {e}")
 
-    # Fallback templates
+    # Fallback templates by language
     templates = {
         "telugu": [
-            "😱 {name} చూడండి!\nPart {p}/{t}\n\nNext part కోసం Follow చేయండి! 🔔\n.\n.\n.\n#doraemon #telugu #telugucartons #telugureels #viral #trending #fyp #reels #anime #cartoon",
-            "🔥 {name} — Part {p}/{t}\n\n❤️ Like & Follow for more!\n.\n.\n.\n#doraemon #telugu #trending #viral #reels #fyp #cartoonstelugu #teluguanimation",
-            "🎬 {name} [{p}/{t}]\n\nమీకు నచ్చితే Like చేయండి! 👇\n.\n.\n.\n#telugu #doraemon #cartoon #viral #trending #reels #fyp #telugucartons",
+            "😱 {name} చూడండి!\nPart {p}/{t}\n\nNext part కోసం Follow చేయండి! 🔔\n.\n.\n.\n"
+            "#doraemon #telugu #telugucartons #telugureels #viral #trending #fyp #reels #anime #cartoon",
+            "🔥 {name} — Part {p}/{t}\n\n❤️ Like & Follow for more!\n.\n.\n.\n"
+            "#doraemon #telugu #trending #viral #reels #fyp #cartoonstelugu #teluguanimation",
+            "🎬 {name} [{p}/{t}]\n\nమీకు నచ్చితే Like చేయండి! 👇\n.\n.\n.\n"
+            "#telugu #doraemon #cartoon #viral #trending #reels #fyp #telugucartons",
         ],
         "tamil": [
-            "😱 {name} பாருங்க!\nPart {p}/{t}\n\nNext part க்கு Follow பண்ணுங்க! 🔔\n.\n.\n.\n#doraemon #tamil #tamilcartoon #tamilreels #viral #trending #fyp #reels #anime",
-            "🔥 {name} — Part {p}/{t}\n\n❤️ Like & Follow!\n.\n.\n.\n#doraemon #tamil #trending #viral #reels #fyp #cartoonstamil #tamilanimation",
-            "🎬 {name} [{p}/{t}]\n\nஉங்களுக்கு பிடித்ததா? Like போடுங்க! 👇\n.\n.\n.\n#tamil #doraemon #cartoon #viral #trending #reels #fyp",
+            "😱 {name} பாருங்க!\nPart {p}/{t}\n\nNext part க்கு Follow பண்ணுங்க! 🔔\n.\n.\n.\n"
+            "#doraemon #tamil #tamilcartoon #tamilreels #viral #trending #fyp #reels #anime",
+            "🔥 {name} — Part {p}/{t}\n\n❤️ Like & Follow!\n.\n.\n.\n"
+            "#doraemon #tamil #trending #viral #reels #fyp #cartoonstamil #tamilanimation",
+            "🎬 {name} [{p}/{t}]\n\nஉங்களுக்கு பிடித்ததா? Like போடுங்க! 👇\n.\n.\n.\n"
+            "#tamil #doraemon #cartoon #viral #trending #reels #fyp",
         ],
         "hindi": [
-            "😱 {name} देखो!\nPart {p}/{t}\n\nNext part के लिए Follow करो! 🔔\n.\n.\n.\n#doraemon #hindi #hindicartoon #hindireels #viral #trending #fyp #reels #anime",
-            "🔥 {name} — Part {p}/{t}\n\n❤️ Like & Follow करो!\n.\n.\n.\n#doraemon #hindi #trending #viral #reels #fyp #cartoonhindi",
-            "🎬 {name} [{p}/{t}]\n\nपसंद आया तो Like करो! 👇\n.\n.\n.\n#hindi #doraemon #cartoon #viral #trending #reels #fyp",
+            "😱 {name} देखो!\nPart {p}/{t}\n\nNext part के लिए Follow करो! 🔔\n.\n.\n.\n"
+            "#doraemon #hindi #hindicartoon #hindireels #viral #trending #fyp #reels #anime",
+            "🔥 {name} — Part {p}/{t}\n\n❤️ Like & Follow करो!\n.\n.\n.\n"
+            "#doraemon #hindi #trending #viral #reels #fyp #cartoonhindi",
+            "🎬 {name} [{p}/{t}]\n\nपसंद आया तो Like करो! 👇\n.\n.\n.\n"
+            "#hindi #doraemon #cartoon #viral #trending #reels #fyp",
         ],
     }
-    pool = templates.get(lang, templates.get("english", [
-        "🎬 {name} Part {p}/{t}\n\nFollow for next part! 🔔\n.\n.\n.\n#movie #reels #viral #trending #fyp #cinema"
-    ]))
+    pool = templates.get(lang, [
+        "🎬 {name} Part {p}/{t}\n\nFollow for next part! 🔔\n.\n.\n.\n"
+        "#movie #reels #viral #trending #fyp #cinema"
+    ])
     return random.choice(pool).format(name=display_name, p=part, t=total)
 
 
@@ -534,7 +731,7 @@ def generate_caption(display_name, part, total):
 def ig_login():
     log("Instagram login via session...")
     if not os.path.exists(C.SESSION_FILE):
-        log_err("session.json not found")
+        log_err("session.json not found — check IG_SESSION secret")
         return None, None
     try:
         cl = Client()
@@ -545,7 +742,7 @@ def ig_login():
         log("Instagram session valid")
         return cl, None
     except ChallengeRequired:
-        log_err("Instagram challenge — session needs regeneration")
+        log_err("Instagram challenge — regenerate session.json locally")
         return None, "challenge"
     except LoginRequired:
         log_err("Session expired — regenerate session.json locally")
@@ -554,10 +751,12 @@ def ig_login():
         log_err(f"Instagram login failed: {e}")
         return None, "error"
 
+
 def ig_upload(cl, clip_path, thumb_path, caption):
-    log(f"Uploading to Instagram ({os.path.getsize(clip_path)/1024/1024:.1f}MB)...")
+    log(f"Uploading to Instagram ({os.path.getsize(clip_path) / 1024 / 1024:.1f}MB)...")
     for attempt in range(1, 4):
         try:
+            # Random delay before upload (mimics human)
             time.sleep(random.randint(10, 30))
             kwargs = {"path": clip_path, "caption": caption}
             if thumb_path and os.path.exists(thumb_path):
@@ -566,10 +765,10 @@ def ig_upload(cl, clip_path, thumb_path, caption):
             log(f"Instagram upload SUCCESS (attempt {attempt})")
             return True
         except PleaseWaitFewMinutes:
-            log_warn(f"Rate limited — waiting {10*attempt} min...")
+            log_warn(f"Rate limited — waiting {10 * attempt} min...")
             time.sleep(600 * attempt)
         except ClientThrottledError:
-            log_warn(f"Throttled — waiting {15*attempt} min...")
+            log_warn(f"Throttled — waiting {15 * attempt} min...")
             time.sleep(900 * attempt)
         except FeedbackRequired as e:
             log_err(f"FeedbackRequired: {e}")
@@ -582,22 +781,35 @@ def ig_upload(cl, clip_path, thumb_path, caption):
             return "challenge"
         except Exception as e:
             log_err(f"Upload attempt {attempt}: {e}")
-            if attempt < 3: time.sleep(120 * attempt)
+            if attempt < 3:
+                time.sleep(120 * attempt)
     log_err("Upload failed after 3 attempts")
     return False
 
 
 # ── STATE MANAGEMENT ──────────────────────────────────────────
+# movies_log.json uses drive_id as key (not filename) for privacy
+# progress.json tracks current video + part number for auto-resume
+# Both are committed to repo so state survives across runs
+
 def load_log():
-    return load_json(C.LOG, {"videos": {}, "order": [], "completed": 0, "uploaded": 0})
+    return load_json(C.LOG, {
+        "videos": {}, "order": [],
+        "completed": 0, "uploaded": 0
+    })
 
 def save_log(data):
-    data["completed"] = sum(1 for v in data["videos"].values() if v["status"] == "completed")
-    data["uploaded"] = sum(v.get("parts_done", 0) for v in data["videos"].values())
+    data["completed"] = sum(
+        1 for v in data["videos"].values() if v["status"] == "completed"
+    )
+    data["uploaded"] = sum(
+        v.get("parts_done", 0) for v in data["videos"].values()
+    )
     data["last_run"] = datetime.now().isoformat()
     save_json(C.LOG, data)
 
 def sync_log(log_data, drive_files):
+    """Add new files to tracker, update episode order by number."""
     id_map = {}
     order = []
     for f in drive_files:
@@ -606,20 +818,28 @@ def sync_log(log_data, drive_files):
         id_map[did] = f
         if did not in log_data["videos"]:
             log_data["videos"][did] = {
-                "status": "pending", "total_parts": 0, "parts_done": 0,
-                "errors": 0, "started": "", "completed_at": "",
+                "status": "pending",
+                "total_parts": 0,
+                "parts_done": 0,
+                "errors": 0,
+                "started": "",
+                "completed_at": "",
             }
-            log(f"New video: {f['display']}")
+            log(f"New video tracked: {f['display']}")
+    # Order is already sorted by episode number from list_drive_files()
     log_data["order"] = order
     return log_data, id_map
 
 def get_next(log_data):
+    """Pick next video: resume in_progress first, then first pending."""
     for did in log_data.get("order", []):
         v = log_data["videos"].get(did, {})
-        if v.get("status") == "in_progress": return did, v
+        if v.get("status") == "in_progress":
+            return did, v
     for did in log_data.get("order", []):
         v = log_data["videos"].get(did, {})
-        if v.get("status") == "pending": return did, v
+        if v.get("status") == "pending":
+            return did, v
     return None, None
 
 def load_progress():
@@ -638,9 +858,10 @@ def check_cooldown(progress):
             until = datetime.fromisoformat(cd)
             if datetime.now() < until:
                 left = (until - datetime.now()).total_seconds() / 3600
-                log_warn(f"Cooldown active — {left:.1f}h remaining. Skipping run.")
+                log_warn(f"Cooldown active — {left:.1f}h remaining. Skipping.")
                 return True
-        except Exception: pass
+        except Exception:
+            pass
     return False
 
 
@@ -650,27 +871,35 @@ def setup():
     for d in [C.TMP, C.CLIPS_DIR, C.THUMBS_DIR, C.FRAMES_DIR]:
         os.makedirs(d, exist_ok=True)
 
+    # Write session from GitHub Secret to /tmp/
     if C.IG_SESSION.strip():
         try:
             parsed = json.loads(C.IG_SESSION)
             with open(C.SESSION_FILE, "w") as f:
                 json.dump(parsed, f, indent=2)
-            log("Session written from secret")
+            log("Session written from secret → /tmp/ (not in repo)")
         except json.JSONDecodeError:
             log_err("IG_SESSION secret is not valid JSON")
             return False
 
     log_step(2, 9, "Verify secrets")
     missing = []
-    for val, name in [(C.IG_USER, "IG_USERNAME"), (C.IG_PASS, "IG_PASSWORD"),
-                       (C.DRIVE_FOLDER, "GDRIVE_FOLDER_ID"), (C.DRIVE_KEY, "GDRIVE_API_KEY")]:
-        if val: log(f"  ✓ {name}")
-        else: log_err(f"  ✗ {name} MISSING"); missing.append(name)
+    for val, name in [
+        (C.IG_USER, "IG_USERNAME"),
+        (C.IG_PASS, "IG_PASSWORD"),
+        (C.DRIVE_FOLDER, "GDRIVE_FOLDER_ID"),
+        (C.DRIVE_KEY, "GDRIVE_API_KEY"),
+    ]:
+        if val:
+            log(f"  ✓ {name}")
+        else:
+            log_err(f"  ✗ {name} MISSING")
+            missing.append(name)
     log(f"  {'✓' if C.GEMINI_KEY else '~'} GEMINI_API_KEY")
-    log(f"  {'✓' if C.WATERMARK else '~'} WATERMARK_TEXT = '{C.WATERMARK}'")
+    log(f"  {'✓' if C.WATERMARK else '~'} WATERMARK = '{C.WATERMARK}'")
     log(f"  ✓ LANGUAGE = '{C.LANGUAGE}'")
     if missing:
-        log_err(f"Missing secrets: {', '.join(missing)}")
+        log_err(f"Missing: {', '.join(missing)}")
         return False
     return True
 
@@ -678,23 +907,27 @@ def setup():
 # ── MAIN ──────────────────────────────────────────────────────
 def main():
     print("=" * 60, flush=True)
-    print(f"🎬 INSTAGRAM REELS AUTO UPLOADER — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(f"🎬 REELS AUTO UPLOADER — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     print("=" * 60, flush=True)
 
     if not setup():
         return
 
+    # ── Check cooldown (24h pause after Instagram challenge) ──
     progress = load_progress()
     if check_cooldown(progress):
         return
 
+    # ── Smart jitter (variable delay based on last 5 days) ──
     smart_delay()
 
+    # ── Scan Drive for videos ──
     drive_files = list_drive_files()
     if not drive_files:
         log_err("No videos in Drive folder")
         return
 
+    # ── Sync tracker + pick next video ──
     log_step(5, 9, "Sync tracker & select next video")
     log_data = load_log()
     log_data, id_map = sync_log(log_data, drive_files)
@@ -707,51 +940,73 @@ def main():
 
     file_meta = id_map.get(drive_id)
     if not file_meta:
-        log_err(f"Drive ID {drive_id} not found in current scan")
+        log_err(f"Drive ID not found in current scan")
         return
     display = file_meta["display"]
     log(f"Selected: {display}")
+    idx = log_data["order"].index(drive_id) + 1
+    log(f"Episode {idx} of {len(log_data['order'])}")
 
+    # ── Download ──
     if not download_file(drive_id, C.MOVIE_FILE):
         video_info["errors"] = video_info.get("errors", 0) + 1
         if video_info["errors"] >= C.MAX_ERRORS:
             video_info["status"] = "error"
-            log_err(f"Marking as error after {C.MAX_ERRORS} failures")
-        save_log(log_data); git_push()
+            log_err(f"Skipping after {C.MAX_ERRORS} download failures")
+        save_log(log_data)
+        git_push()
         return
 
+    # ── Analyze video ──
     log_step(7, 9, "Analyze video")
     duration = get_duration(C.MOVIE_FILE)
     if duration <= 0:
-        video_info["status"] = "error"; save_log(log_data); git_push(); return
+        video_info["status"] = "error"
+        save_log(log_data)
+        git_push()
+        return
     total = count_parts(duration)
     log(f"Duration: {duration:.0f}s = {total} parts × {C.CLIP_LEN}s")
+
     video_info["total_parts"] = total
     if video_info["status"] == "pending":
         video_info["status"] = "in_progress"
         video_info["started"] = datetime.now().isoformat()
     save_log(log_data)
 
+    # ── Auto-resume: check progress ──
     if progress.get("drive_id") != drive_id:
-        progress = {"drive_id": drive_id, "part": 0, "total": total,
-                     "thumb_time": -1, "cooldown_until": ""}
+        log("New video — resetting progress to Part 0")
+        progress = {
+            "drive_id": drive_id, "part": 0, "total": total,
+            "thumb_time": -1, "cooldown_until": ""
+        }
     last = progress["part"]
-    log(f"Progress: {last}/{total} done")
+    log(f"Progress: {last}/{total} parts done")
 
+    # Already complete? Mark and move on
     if last >= total:
         log("🎉 Already completed — marking done")
         video_info["status"] = "completed"
         video_info["completed_at"] = datetime.now().isoformat()
-        progress = {"drive_id": "", "part": 0, "total": 0, "thumb_time": -1, "cooldown_until": ""}
-        save_progress(progress); save_log(log_data); git_push(); return
+        progress = {
+            "drive_id": "", "part": 0, "total": 0,
+            "thumb_time": -1, "cooldown_until": ""
+        }
+        save_progress(progress)
+        save_log(log_data)
+        git_push()
+        return
 
-    # ── Thumbnail frame (one per episode) ──
+    # ── Thumbnail: select best frame ONCE per episode ──
     log_step(8, 9, "Thumbnail frame selection")
     if progress.get("thumb_time", -1) < 0:
+        # First part of this episode — select best frame
         bg_frame, thumb_time = select_best_frame(C.MOVIE_FILE, duration)
         progress["thumb_time"] = thumb_time
         save_progress(progress)
     else:
+        # Subsequent parts — reuse same frame
         thumb_time = progress["thumb_time"]
         jpg = os.path.join(C.THUMBS_DIR, "bg.jpg")
         bg_frame = extract_frame(C.MOVIE_FILE, thumb_time, jpg)
@@ -764,12 +1019,18 @@ def main():
         cd_until = (datetime.now() + timedelta(hours=C.COOLDOWN_HRS)).isoformat()
         progress["cooldown_until"] = cd_until
         log_err(f"Challenge → cooldown until {cd_until}")
-        save_progress(progress); save_log(log_data); git_push(); return
+        save_progress(progress)
+        save_log(log_data)
+        git_push()
+        return
     if cl is None:
         log_err("Login failed — aborting")
-        save_progress(progress); save_log(log_data); git_push(); return
+        save_progress(progress)
+        save_log(log_data)
+        git_push()
+        return
 
-    # ── Extract, thumbnail, upload ──
+    # ── Extract clip, make thumbnail, upload ──
     part = last + 1
     clip_path = os.path.join(C.CLIPS_DIR, f"part_{part}.mp4")
     thumb_path = os.path.join(C.THUMBS_DIR, f"thumb_{part}.jpg")
@@ -778,13 +1039,20 @@ def main():
         video_info["errors"] = video_info.get("errors", 0) + 1
         if video_info["errors"] >= C.MAX_ERRORS:
             video_info["status"] = "error"
-        save_progress(progress); save_log(log_data); git_push(); return
+            log_err("Max errors — skipping to next video")
+        save_progress(progress)
+        save_log(log_data)
+        git_push()
+        return
 
     if not validate_clip(clip_path):
         video_info["errors"] = video_info.get("errors", 0) + 1
         if video_info["errors"] >= C.MAX_ERRORS:
             video_info["status"] = "error"
-        save_progress(progress); save_log(log_data); git_push(); return
+        save_progress(progress)
+        save_log(log_data)
+        git_push()
+        return
 
     make_thumbnail(bg_frame, display, part, total, thumb_path)
     caption = generate_caption(display, part, total)
@@ -794,54 +1062,69 @@ def main():
     if result == "challenge":
         cd_until = (datetime.now() + timedelta(hours=C.COOLDOWN_HRS)).isoformat()
         progress["cooldown_until"] = cd_until
-        log_err(f"Challenge during upload → cooldown until {cd_until}")
-        save_progress(progress); save_log(log_data); git_push(); return
+        log_err(f"Challenge during upload → cooldown {C.COOLDOWN_HRS}h")
+        save_progress(progress)
+        save_log(log_data)
+        git_push()
+        return
 
     if result is True:
+        # ── SUCCESS ──
         progress["part"] = part
         video_info["parts_done"] = part
         video_info["errors"] = 0
-        log(f"✅ Part {part}/{total} uploaded successfully!")
+        log(f"✅ Part {part}/{total} uploaded!")
 
         if part >= total:
+            # ── EPISODE COMPLETE — auto-advance to next ──
             log("🎉🎉🎉 VIDEO FULLY UPLOADED! 🎉🎉🎉")
             video_info["status"] = "completed"
             video_info["completed_at"] = datetime.now().isoformat()
-            progress = {"drive_id": "", "part": 0, "total": 0,
-                        "thumb_time": -1, "cooldown_until": ""}
+            # Reset progress so next run picks next episode
+            progress = {
+                "drive_id": "", "part": 0, "total": 0,
+                "thumb_time": -1, "cooldown_until": ""
+            }
+            # Show what comes next
             order = log_data.get("order", [])
-            idx = order.index(drive_id) if drive_id in order else -1
-            if idx >= 0 and idx + 1 < len(order):
-                next_id = order[idx + 1]
+            curr_idx = order.index(drive_id) if drive_id in order else -1
+            if curr_idx >= 0 and curr_idx + 1 < len(order):
+                next_id = order[curr_idx + 1]
                 next_meta = id_map.get(next_id)
                 if next_meta:
-                    log(f"⏭️ Next: {next_meta['display']}")
-            elif idx >= 0:
-                log("🏆 That was the LAST video!")
+                    log(f"⏭️ Next episode: {next_meta['display']}")
+            else:
+                log("🏆 That was the LAST video in the folder!")
         else:
             remaining = total - part
-            hours_left = remaining * 2
-            log(f"{remaining} parts left (~{hours_left}h at 12/day)")
+            log(f"{remaining} parts left (~{remaining * 2}h at 12 reels/day)")
     else:
+        # ── FAILED ──
         video_info["errors"] = video_info.get("errors", 0) + 1
         log_err(f"Upload failed (errors: {video_info['errors']}/{C.MAX_ERRORS})")
         if video_info["errors"] >= C.MAX_ERRORS:
             video_info["status"] = "error"
             log_err("Max errors reached — skipping to next video")
+            # Reset so next run picks next episode
+            progress = {
+                "drive_id": "", "part": 0, "total": 0,
+                "thumb_time": -1, "cooldown_until": ""
+            }
 
+    # ── Save everything ──
     save_progress(progress)
     save_log(log_data)
     git_push()
 
     # ── Summary ──
     print("\n" + "=" * 50, flush=True)
-    total_v = len(log_data["videos"])
     done_v = log_data.get("completed", 0)
+    total_v = len(log_data["videos"])
     total_r = log_data.get("uploaded", 0)
-    print(f"📊 Videos: {done_v}/{total_v} done | Reels: {total_r} uploaded", flush=True)
+    print(f"📊 Episodes: {done_v}/{total_v} done | Reels: {total_r} uploaded", flush=True)
     print("=" * 50, flush=True)
 
-    # Cleanup temp
+    # Cleanup /tmp/
     shutil.rmtree(C.TMP, ignore_errors=True)
 
 
