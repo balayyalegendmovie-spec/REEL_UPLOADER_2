@@ -1,12 +1,12 @@
 {
   "videos": {
     "1fNQwCn5ihy5m6gdFuRrPsc6t_yM9FXz5": {
-      "status": "in_progress",
+      "status": "completed",
       "total_parts": 24,
-      "parts_done": 23,
+      "parts_done": 24,
       "errors": 0,
       "started": "2026-03-18T14:34:27.224150",
-      "completed_at": ""
+      "completed_at": "2026-03-21T03:36:06.951677"
     },
     "1CtxT5wojmAVa7gQ7S1Q04ztP3rHtJ2d3": {
       "status": "pending",
@@ -471,7 +471,7 @@
     "1j39fC8f2fO4ZqaCEdwzggVQTjjWmwlFR",
     "1sgXxEyoAaTHKx_q3o7SIwYNU9ZRBFwxN"
   ],
-  "completed": 0,
-  "uploaded": 23,
-  "last_run": "2026-03-20T21:03:10.846111"
+  "completed": 1,
+  "uploaded": 24,
+  "last_run": "2026-03-21T03:36:06.951923"
 }
